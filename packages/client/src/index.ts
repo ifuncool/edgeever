@@ -12,10 +12,12 @@ import type {
   MemoEditSession,
   MemoRevision,
   MemoSummary,
+  MemoShare,
   Notebook,
   Resource,
   ResourceListItem,
   ResourceStorageSummary,
+  PublicMemoShare,
   TagSummary,
   TiptapDoc,
 } from "@edgeever/shared";
@@ -72,6 +74,14 @@ export type ListLoginDeviceSessionsResponse = {
 
 export type MemoResponse = {
   memo: MemoDetail;
+};
+
+export type MemoShareResponse = {
+  share: MemoShare | null;
+};
+
+export type PublicMemoShareResponse = {
+  share: PublicMemoShare;
 };
 
 export type NotebookResponse = {
@@ -172,6 +182,9 @@ export const createEdgeEverClient = (options: EdgeEverClientOptions = {}) => {
 
   return {
     getSession: () => request<AuthSession>("/api/v1/auth/session"),
+
+    getPublicMemoShare: (token: string) =>
+      request<PublicMemoShareResponse>(`/api/public/shares/${encodeURIComponent(token)}`),
 
     listLoginDeviceSessions: () =>
       request<ListLoginDeviceSessionsResponse>("/api/v1/auth/sessions"),
@@ -358,6 +371,18 @@ export const createEdgeEverClient = (options: EdgeEverClientOptions = {}) => {
       return request<MemoResponse>(`/api/v1/memos/${memoId}${suffix}`);
     },
 
+    getMemoShare: (memoId: string) =>
+      request<MemoShareResponse>(`/api/v1/memos/${memoId}/share`),
+
+    createMemoShare: (memoId: string) =>
+      request<{ share: MemoShare }>(`/api/v1/memos/${memoId}/share`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+
+    revokeMemoShare: (memoId: string) =>
+      request<{ ok: true }>(`/api/v1/memos/${memoId}/share`, { method: "DELETE" }),
+
     createMemoEditSession: (memoId: string) =>
       request<{ editSession: MemoEditSession }>(`/api/v1/memos/${memoId}/edit-sessions`, {
         method: "POST",
@@ -373,6 +398,17 @@ export const createEdgeEverClient = (options: EdgeEverClientOptions = {}) => {
       }),
 
     listResources: () => request<ListResourcesResponse>("/api/v1/resources"),
+
+    renameResource: (resourceId: string, filename: string) =>
+      request<ResourceResponse>(`/api/v1/resources/${encodeURIComponent(resourceId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ filename }),
+      }),
+
+    deleteResource: (resourceId: string) =>
+      request<{ ok: true }>(`/api/v1/resources/${encodeURIComponent(resourceId)}`, {
+        method: "DELETE",
+      }),
 
     getMarkdownExportPage: (offset = 0, limit = 50) =>
       request<MarkdownExportPage>(`/api/v1/exports/markdown?offset=${offset}&limit=${limit}`),

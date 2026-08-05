@@ -41,7 +41,9 @@
     --dark-surface-rgb: 255 255 255;
     --editor-body-font-size: 0.9375rem;
     --editor-body-line-height: 1.6;
-    --editor-paragraph-spacing: 0.45rem;
+    --editor-paragraph-spacing: 0.35rem;
+    --memo-content-divider-color: rgb(var(--brand-green-300-rgb));
+    --memo-content-divider-spacing: 1.5rem;
     --editor-outline-width: 300px;
     --editor-content-max-width: 880px;
 
@@ -142,6 +144,15 @@ body,
   overflow: hidden;
 }
 
+/* Public share pages are standalone and must scroll the document. */
+html:has(.edgeever-public-share),
+html:has(.edgeever-public-share) body,
+html:has(.edgeever-public-share) #root {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+}
+
 html.edgeever-mobile-native-editing,
 html.edgeever-mobile-native-editing body,
 html.edgeever-mobile-native-editing #root {
@@ -157,6 +168,12 @@ body {
   color: #0f172a;
   overscroll-behavior-x: none;
   overscroll-behavior-y: auto;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Keep the three-pane desktop workspace usable on compact laptop screens.
@@ -207,6 +224,35 @@ textarea {
   padding: 8px 12px 56px;
 }
 
+.edgeever-public-share .ProseMirror {
+  min-height: 0;
+  padding: 8px 20px 40px;
+  color: #0f172a;
+}
+
+.edgeever-public-share .ProseMirror [data-edgeever-theme-block] {
+  margin: 1.25rem 0;
+  border: 1px solid #dbeee5;
+  border-radius: 6px;
+  background: #fbfefc;
+  padding: 0.8rem 1rem;
+}
+
+.edgeever-public-share .ProseMirror [data-theme-block-kind="chapter"] {
+  border-left: 4px solid var(--brand-green);
+  background: var(--brand-green-soft);
+}
+
+:root.dark .edgeever-public-share .ProseMirror {
+  color: #0f172a;
+}
+
+@media (min-width: 640px) {
+  .edgeever-public-share .ProseMirror {
+    padding-inline: 36px;
+  }
+}
+
 .ProseMirror .edgeever-search-match {
   border-radius: 0.2rem;
   background-color: rgb(254 240 138 / 0.8);
@@ -249,6 +295,7 @@ textarea {
 .ProseMirror p {
   line-height: var(--editor-body-line-height);
   margin: 0 0 var(--editor-paragraph-spacing);
+  padding: 0;
 }
 
 .ProseMirror a.edgeever-note-link,
@@ -509,7 +556,8 @@ textarea {
   align-items: center;
   justify-content: center;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   padding: 3.25rem 1rem 1rem;
   border: 1px solid #d9e2dc;
   border-radius: 8px;
@@ -538,10 +586,10 @@ textarea {
 
 .ProseMirror .edgeever-mermaid-svg svg {
   display: block;
-  width: 100%;
+  width: auto;
   max-width: 100%;
   height: auto;
-  max-height: none;
+  max-height: 30rem;
 }
 
 .ProseMirror .edgeever-mermaid-source {
@@ -559,9 +607,9 @@ textarea {
 }
 
 .ProseMirror hr {
-  margin: 1.5rem 0;
+  margin: var(--memo-content-divider-spacing) 0;
   border: 0;
-  border-top: 1px solid rgb(var(--brand-green-300-rgb));
+  border-top: 1px solid var(--memo-content-divider-color);
 }
 
 .ProseMirror img {
@@ -602,7 +650,7 @@ textarea {
 .ProseMirror .edgeever-image-controls {
   position: absolute;
   right: 0.5rem;
-  bottom: 0.5rem;
+  top: 0.5rem;
   z-index: 2;
   display: flex;
   align-items: center;
@@ -624,30 +672,18 @@ textarea {
 .ProseMirror .edgeever-image-preset {
   display: inline-flex;
   min-width: 3rem;
-  min-height: 2.5rem;
-  flex-direction: column;
+  min-height: 2rem;
   align-items: center;
   justify-content: center;
-  gap: 0.15rem;
   border-radius: 6px;
   color: #475569;
   font-size: 0.75rem;
   font-weight: 700;
 }
 
-.ProseMirror .edgeever-image-preset-percent {
-  color: #94a3b8;
-  font-size: 0.625rem;
-  font-weight: 600;
-}
-
 .ProseMirror .edgeever-image-preset:hover,
 .ProseMirror .edgeever-image-preset.is-active {
   background: var(--brand-green-muted);
-  color: var(--brand-green-text);
-}
-
-.ProseMirror .edgeever-image-preset.is-active .edgeever-image-preset-percent {
   color: var(--brand-green-text);
 }
 
@@ -1227,8 +1263,17 @@ textarea {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .edgeever-mermaid-viewer * {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
     animation-duration: 0.01ms !important;
   }
 }

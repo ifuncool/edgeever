@@ -21,7 +21,7 @@ export const MERMAID_THEME_NAMES = [
 ] as const;
 export type MermaidThemeName = (typeof MERMAID_THEME_NAMES)[number];
 
-interface MermaidThemePalette {
+export interface MermaidThemePalette {
   bg: string;
   fg: string;
   line?: string;
@@ -56,6 +56,8 @@ export const EDITOR_THEME_NAMES = [
   "default",
   "minimal-emerald",
   "outline-emerald",
+  "wechat-green",
+  "modern-mint",
   "custom",
 ] as const;
 export type EditorThemeName = string;
@@ -155,9 +157,9 @@ export const getStoredMermaidTheme = (): MermaidThemeName => {
 };
 
 export const getStoredMermaidRenderer = (): MermaidRenderer => {
-  if (typeof window === "undefined") return "mermaid";
+  if (typeof window === "undefined") return "beautiful";
   const stored = window.localStorage.getItem(MERMAID_RENDERER_STORAGE_KEY);
-  return MERMAID_RENDERERS.includes(stored as MermaidRenderer) ? stored as MermaidRenderer : "mermaid";
+  return MERMAID_RENDERERS.includes(stored as MermaidRenderer) ? stored as MermaidRenderer : "beautiful";
 };
 
 export const getStoredEditorTheme = (): string => {

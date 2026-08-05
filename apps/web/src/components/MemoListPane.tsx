@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
+import * as m from "motion/react-m";
 import {
   X,
   ChevronLeft,
@@ -38,6 +39,10 @@ import {
   MoreVertical,
   CheckCircle2,
   TagX,
+  Link2,
+  FileDown,
+  Printer,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -59,9 +64,12 @@ import type {
   MemoSortMode,
   MemoListDensity,
   MemoContextMenuState,
+  MemoDocumentAction,
   NotebookMoveOption,
 } from "@/lib/app-helpers";
+import { contentEnterMotion, paneEnterMotion } from "@/lib/motion";
 import type { SyncQueueSummary } from "@/lib/sync-queue";
+import { isLocalMemoId } from "@/lib/local-mirror";
 import {
   getMemoFilterOptions,
   getMemoSortOptions,
@@ -132,7 +140,7 @@ export const MemoSelectionActionBar = ({
 
   return (
     <div className="hidden h-full min-h-0 flex-1 items-center justify-start bg-white px-16 py-10 lg:flex lg:pl-44 xl:px-24 xl:pl-44">
-      <div className="w-72 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+      <m.div className="w-72 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg" {...paneEnterMotion}>
         <div className="flex h-9 items-center gap-2 px-3 text-xs font-semibold text-slate-400">
           <CheckSquare className="h-4 w-4" />
           {getSelectionCountLabel(selectedCount, t)}
@@ -206,7 +214,7 @@ export const MemoSelectionActionBar = ({
           <X className="h-4 w-4" />
           {t("memoList.clearSelection")}
         </Button>
-      </div>
+      </m.div>
     </div>
   );
 };
@@ -341,6 +349,7 @@ export const MemoListPane = ({
   onRestoreMemo,
   onTogglePinMemo,
   onMoveMemo,
+  onRequestDocumentAction,
   onMoveSelectedMemos,
   onPinSelectedMemos,
   onDeleteSelectedMemos,
@@ -413,6 +422,7 @@ export const MemoListPane = ({
   onRestoreMemo: (memoId: string) => void;
   onTogglePinMemo: (memo: MemoSummary) => void;
   onMoveMemo: (memoId: string, notebookId: string) => void;
+  onRequestDocumentAction: (memoId: string, action: MemoDocumentAction, printWindow?: Window | null) => void;
   onMoveSelectedMemos: (notebookId: string) => void;
   onPinSelectedMemos: (pinned: boolean) => void;
   onDeleteSelectedMemos: () => void;
@@ -521,6 +531,17 @@ export const MemoListPane = ({
     : isSyncingMemos
       ? t("memoList.manualSyncing")
       : t("memoList.manualSync");
+
+  const requestContextDocumentAction = (action: MemoDocumentAction) => {
+    if (!memoContextMenu) {
+      return;
+    }
+
+    const { memo } = memoContextMenu;
+    const printWindow = action === "export-pdf" ? window.open("about:blank", "_blank") : undefined;
+    setMemoContextMenu(null);
+    onRequestDocumentAction(memo.id, action, printWindow);
+  };
 
   useEffect(() => {
     if (notebook?.id) {
@@ -1284,7 +1305,7 @@ export const MemoListPane = ({
         </div>
 
         {hasListConstraint && (
-          <div
+          <m.div
             className={cn(
               "mt-3 flex min-h-8 items-center gap-2 rounded-md border px-3 py-1.5 text-xs",
               searchActive
@@ -1292,6 +1313,7 @@ export const MemoListPane = ({
                 : "border-slate-200 bg-white text-slate-500"
             )}
             role="status"
+            {...contentEnterMotion}
           >
             {searchActive && (
               <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-600 px-2 py-1 font-semibold text-white">
@@ -1317,7 +1339,7 @@ export const MemoListPane = ({
             >
               {searchActive ? t("memoList.cancelSearch") : t("memoList.reset")}
             </button>
-          </div>
+          </m.div>
         )}
       </header>
 
@@ -1372,7 +1394,6 @@ export const MemoListPane = ({
                   listDensity={listDensity}
                   multiSelectKeyDown={multiSelectKeyDown}
                   onOpen={() => onOpenMemo(memo.id)}
-                  onDelete={() => onDeleteMemo(memo.id)}
                   onRestore={() => onRestoreMemo(memo.id)}
                   onOpenContextMenu={(event) => handleOpenMemoContextMenu(memo, event)}
                   onOpenSelectionContextMenu={(event) => handleOpenSelectionContextMenu(memo, event)}
@@ -1500,6 +1521,37 @@ export const MemoListPane = ({
                       ))}
                     </div>
                   )}
+                  <DropdownMenuSeparator className="my-1 h-px bg-slate-100" />
+                  <DropdownMenuItem
+                    className="flex h-9 w-full items-center gap-2 px-3 text-left text-sm text-slate-700 hover:bg-slate-50 cursor-pointer outline-none"
+                    disabled={isLocalMemoId(memoContextMenu.memo.id)}
+                    onClick={() => requestContextDocumentAction("share")}
+                  >
+                    <Link2 className="h-4 w-4 text-slate-500" />
+                    {t("sharing.action")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="flex h-9 w-full items-center gap-2 px-3 text-left text-sm text-slate-700 hover:bg-slate-50 cursor-pointer outline-none"
+                    onClick={() => requestContextDocumentAction("export-markdown")}
+                  >
+                    <FileDown className="h-4 w-4 text-slate-500" />
+                    {t("editor.exportMarkdown")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="flex h-9 w-full items-center gap-2 px-3 text-left text-sm text-slate-700 hover:bg-slate-50 cursor-pointer outline-none"
+                    onClick={() => requestContextDocumentAction("export-pdf")}
+                  >
+                    <Printer className="h-4 w-4 text-slate-500" />
+                    {t("editor.exportPdf")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="flex h-9 w-full items-center gap-2 px-3 text-left text-sm text-slate-700 hover:bg-slate-50 cursor-pointer outline-none"
+                    onClick={() => requestContextDocumentAction("save-as-template")}
+                  >
+                    <Pencil className="h-4 w-4 text-slate-500" />
+                    {t("templates.saveAsTemplate")}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="my-1 h-px bg-slate-100" />
                   <DropdownMenuItem
                     className="flex h-9 w-full items-center gap-2 px-3 text-left text-sm text-rose-700 hover:bg-rose-50 cursor-pointer outline-none"
                     onClick={() => {

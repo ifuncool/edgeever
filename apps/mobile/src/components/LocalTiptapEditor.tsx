@@ -9,7 +9,7 @@ import { TableKit } from "@tiptap/extension-table";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import * as Clipboard from "expo-clipboard";
-import type { TiptapDoc } from "@edgeever/shared";
+import { MEMO_CONTENT_STYLE, getImageReferrerPolicy, getResourceIdFromUrl, type TiptapDoc } from "@edgeever/shared";
 import {
   DEFAULT_IMAGE_WIDTH_PERCENT,
   IMAGE_WIDTH_PRESETS,
@@ -44,6 +44,8 @@ export interface LocalTiptapEditorRef extends DOMImperativeFactory {
   cancelImageUpload: (uploadId: DOMValue) => void;
   completeImageUpload: (uploadId: DOMValue, imageUrl: DOMValue, alt: DOMValue) => void;
   appendAttachment: (attachmentUrl: DOMValue, filename: DOMValue) => void;
+  removeResource: (targetJson: DOMValue) => void;
+  renameResource: (targetJson: DOMValue, filename: DOMValue) => void;
   flush: () => void;
   focusEnd: () => void;
   replaceAll: (query: DOMValue, replacement: DOMValue) => void;
@@ -58,6 +60,7 @@ type LocalTiptapEditorProps = {
   dom?: DOMProps;
   onChange: (content: EditorDoc) => Promise<void>;
   onLoadResource: (source: string) => Promise<string | null>;
+  onResourcePress?: (targetJson: string) => Promise<void>;
   onPickImage: () => Promise<void>;
   onReady: (startupMs: number) => Promise<void>;
   onSearchResult?: (count: number, index: number) => Promise<void>;
@@ -77,6 +80,66 @@ type MermaidRendererProps = {
 const CHANGE_IDLE_MS = 500;
 const TRANSIENT_IMAGE_UPLOAD_META = "edgeeverImageUploadPlaceholder";
 const ignoreSearchResult = async () => undefined;
+
+type EditorResourceTarget = {
+  filename: string;
+  href: string;
+  kind: "attachment" | "image";
+  resourceId: string;
+};
+
+const parseMobileResourceTarget = (value: string): EditorResourceTarget | null => {
+  try {
+    const parsed = JSON.parse(value) as Partial<EditorResourceTarget>;
+    if (typeof parsed.href !== "string" || typeof parsed.filename !== "string") return null;
+    if (parsed.kind !== "attachment" && parsed.kind !== "image") return null;
+    const resourceId = getResourceIdFromUrl(parsed.href);
+    if (!resourceId || (parsed.resourceId && parsed.resourceId !== resourceId)) return null;
+    return { filename: parsed.filename, href: parsed.href, kind: parsed.kind, resourceId };
+  } catch {
+    return null;
+  }
+};
+
+const normalizeEditorAttachmentFilename = (label: string, resourceId: string) =>
+  label.replace(/^\s*(?:附件[：:]|Attachment:)\s*/i, "").trim() || resourceId;
+
+const handleMobileResourceEvent = (
+  event: Event,
+  onResourcePress?: (targetJson: string) => Promise<void>
+) => {
+  const element = event.target instanceof Element ? event.target : null;
+  const link = element?.closest<HTMLAnchorElement>('a.edgeever-attachment-link, a[href*="/api/v1/resources/"]');
+  const href = link?.getAttribute("href") ?? "";
+  const resourceId = getResourceIdFromUrl(href);
+  if (link && resourceId && onResourcePress) {
+    event.preventDefault();
+    event.stopPropagation();
+    void onResourcePress(JSON.stringify({
+      filename: normalizeEditorAttachmentFilename(link.textContent ?? "", resourceId),
+      href,
+      kind: "attachment",
+      resourceId,
+    } satisfies EditorResourceTarget));
+    return true;
+  }
+
+  const imageFigure = element?.closest<HTMLElement>("figure.edgeever-image-node");
+  const imageHref = imageFigure?.dataset.resourceHref ?? "";
+  const imageResourceId = getResourceIdFromUrl(imageHref);
+  const imageActionRequested = event.type === "contextmenu" || Boolean(element?.closest(".edgeever-image-actions"));
+  if (!imageFigure || !imageResourceId || !imageActionRequested || !onResourcePress) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  void onResourcePress(JSON.stringify({
+    filename: imageFigure.dataset.resourceFilename || `image-${imageResourceId}`,
+    href: imageHref,
+    kind: "image",
+    resourceId: imageResourceId,
+  } satisfies EditorResourceTarget));
+  return true;
+};
 
 const getMobileMermaidTheme = (theme: "light" | "dark") => THEMES[theme === "dark" ? "zinc-dark" : "zinc-light"];
 
@@ -235,12 +298,14 @@ function LocalTiptapEditorImpl(props: LocalTiptapEditorProps) {
   const pendingImageSelectionRef = useRef<{ from: number; to: number } | null>(null);
   const onChangeRef = useRef(props.onChange);
   const onLoadResourceRef = useRef(props.onLoadResource);
+  const onResourcePressRef = useRef(props.onResourcePress);
   const onPickImageRef = useRef(props.onPickImage);
   const onReadyRef = useRef(props.onReady);
   const onSearchResultRef = useRef(props.onSearchResult ?? ignoreSearchResult);
 
   onChangeRef.current = props.onChange;
   onLoadResourceRef.current = props.onLoadResource;
+  onResourcePressRef.current = props.onResourcePress;
   onPickImageRef.current = props.onPickImage;
   onReadyRef.current = props.onReady;
   onSearchResultRef.current = props.onSearchResult ?? ignoreSearchResult;
@@ -256,7 +321,7 @@ function LocalTiptapEditorImpl(props: LocalTiptapEditorProps) {
   const editor = useEditor({
     autofocus: props.autoFocus ? "end" : false,
     extensions: [
-      StarterKit.configure({ codeBlock: false }),
+      StarterKit.configure({ codeBlock: false, link: { openOnClick: false } }),
       mermaidCodeBlockExtension,
       protectedImageExtension,
       TableKit.configure({
@@ -269,6 +334,10 @@ function LocalTiptapEditorImpl(props: LocalTiptapEditorProps) {
     content: resolveImageSources(props.content, props.baseUrl),
     editorProps: {
       attributes: getMobileEditorInputAttributes("edgeever-editor-content"),
+      handleClick: (_view, _pos, event) => handleMobileResourceEvent(event, onResourcePressRef.current),
+      handleDOMEvents: {
+        contextmenu: (_view, event) => handleMobileResourceEvent(event, onResourcePressRef.current),
+      },
     },
     onUpdate: ({ editor: activeEditor, transaction }) => {
       if (transaction.getMeta(TRANSIENT_IMAGE_UPLOAD_META)) {
@@ -371,7 +440,7 @@ function LocalTiptapEditorImpl(props: LocalTiptapEditorProps) {
       type: "paragraph",
       content: [{
         type: "text",
-        text: `附件：${filenameValue}`,
+        text: `${props.locale === "en-US" ? "Attachment: " : "附件："}${filenameValue}`,
         marks: [{
           type: "link",
           attrs: {
@@ -382,7 +451,61 @@ function LocalTiptapEditorImpl(props: LocalTiptapEditorProps) {
         }],
       }],
     }).run();
-  }, [editor, props.baseUrl]);
+  }, [editor, props.baseUrl, props.locale]);
+
+  const renameResource = useCallback((targetJsonValue: DOMValue, filenameValue: DOMValue) => {
+    if (!editor || typeof targetJsonValue !== "string" || typeof filenameValue !== "string") return;
+    const target = parseMobileResourceTarget(targetJsonValue);
+    if (!target) return;
+    if (target.kind === "image") {
+      const match = findMobileImageRange(editor, target.resourceId);
+      if (!match) return;
+      const imageNode = editor.state.doc.nodeAt(match.pos);
+      if (!imageNode) return;
+      editor.view.dispatch(editor.state.tr.setNodeMarkup(match.pos, imageNode.type, {
+        ...imageNode.attrs,
+        alt: filenameValue,
+        title: filenameValue,
+      }));
+      return;
+    }
+    const range = findMobileAttachmentRange(editor, target.resourceId);
+    if (!range) return;
+    const linkMark = editor.schema.marks.link?.create(range.linkAttrs);
+    if (!linkMark) return;
+    editor.view.dispatch(editor.state.tr.replaceWith(
+      range.from,
+      range.to,
+      editor.schema.text(`${props.locale === "en-US" ? "Attachment: " : "附件："}${filenameValue}`, [linkMark])
+    ));
+  }, [editor, props.locale]);
+
+  const removeResource = useCallback((targetJsonValue: DOMValue) => {
+    if (!editor || typeof targetJsonValue !== "string") return;
+    const target = parseMobileResourceTarget(targetJsonValue);
+    if (!target) return;
+    if (target.kind === "image") {
+      const match = findMobileImageRange(editor, target.resourceId);
+      if (match) editor.view.dispatch(editor.state.tr.delete(match.pos, match.pos + match.nodeSize));
+      return;
+    }
+    const range = findMobileAttachmentRange(editor, target.resourceId);
+    if (!range) return;
+    const resolved = editor.state.doc.resolve(range.from);
+    let from = range.from;
+    let to = range.to;
+    for (let depth = resolved.depth; depth > 0; depth -= 1) {
+      const node = resolved.node(depth);
+      if (node.type.name !== "paragraph") continue;
+      const nodeFrom = resolved.before(depth);
+      if (range.from === nodeFrom + 1 && range.to === nodeFrom + node.nodeSize - 1) {
+        from = nodeFrom;
+        to = nodeFrom + node.nodeSize;
+      }
+      break;
+    }
+    editor.view.dispatch(editor.state.tr.delete(from, to));
+  }, [editor]);
 
   useDOMImperativeHandle(
     props.ref,
@@ -393,10 +516,12 @@ function LocalTiptapEditorImpl(props: LocalTiptapEditorProps) {
       appendAttachment,
       flush,
       focusEnd: () => editor?.commands.focus("end"),
+      removeResource,
+      renameResource,
       replaceAll,
       search,
     }),
-    [appendAttachment, beginImageUpload, cancelImageUpload, completeImageUpload, editor, flush, replaceAll, search]
+    [appendAttachment, beginImageUpload, cancelImageUpload, completeImageUpload, editor, flush, removeResource, renameResource, replaceAll, search]
   );
 
   useEffect(() => {
@@ -889,15 +1014,12 @@ const createMobileImageSizeControls = (
     const label = getMobileEditorImageWidthPresetLabel(preset.id, locale);
     button.type = "button";
     button.className = "edgeever-image-size-button";
-    button.setAttribute("aria-label", `${label}，${preset.width}%`);
+    button.setAttribute("aria-label", label);
     button.setAttribute("aria-pressed", "false");
 
     const labelNode = document.createElement("span");
     labelNode.textContent = label;
-    const percentNode = document.createElement("span");
-    percentNode.className = "edgeever-image-size-percent";
-    percentNode.textContent = `${preset.width}%`;
-    button.append(labelNode, percentNode);
+    button.append(labelNode);
 
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
@@ -974,6 +1096,10 @@ const createProtectedImageExtension = (
         preview.alt = "";
         const previewSource = String(node.attrs.title ?? "");
         if (previewSource) {
+          const previewReferrerPolicy = getImageReferrerPolicy(previewSource);
+          if (previewReferrerPolicy) {
+            preview.referrerPolicy = previewReferrerPolicy;
+          }
           preview.src = previewSource;
         }
 
@@ -1010,6 +1136,10 @@ const createProtectedImageExtension = (
           activeRequestId: number
         ) => {
           const preload = document.createElement("img");
+          const preloadReferrerPolicy = getImageReferrerPolicy(displaySource);
+          if (preloadReferrerPolicy) {
+            preload.referrerPolicy = preloadReferrerPolicy;
+          }
           preload.onload = () => {
             if (activeRequestId !== requestId) {
               return;
@@ -1094,7 +1224,17 @@ const createProtectedImageExtension = (
       wrapper.className = "edgeever-image-node";
       wrapper.contentEditable = "false";
       const image = document.createElement("img");
-      wrapper.append(image, sizeControls.dom);
+      const actionButton = document.createElement("button");
+      actionButton.type = "button";
+      actionButton.className = "edgeever-image-actions";
+      actionButton.contentEditable = "false";
+      actionButton.setAttribute("aria-label", locale === "en-US" ? "Image actions" : "图片操作");
+      actionButton.textContent = "⋯";
+      actionButton.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      wrapper.append(image, actionButton, sizeControls.dom);
       const imageType = node.type;
       let requestId = 0;
 
@@ -1108,7 +1248,15 @@ const createProtectedImageExtension = (
         const source = String(attributes.src ?? "");
         const alt = String(attributes.alt ?? "");
         const title = String(attributes.title ?? "");
+        wrapper.dataset.resourceHref = source;
+        wrapper.dataset.resourceFilename = alt || title;
         image.alt = alt;
+        const referrerPolicy = getImageReferrerPolicy(source);
+        if (referrerPolicy) {
+          image.referrerPolicy = referrerPolicy;
+        } else {
+          image.removeAttribute("referrerpolicy");
+        }
         if (title) {
           image.title = title;
         } else {
@@ -1166,6 +1314,34 @@ const createProtectedImageExtension = (
 
 type TiptapEditor = NonNullable<ReturnType<typeof useEditor>>;
 type ImageUploadPlaceholderMatch = { nodeSize: number; pos: number };
+type AttachmentRange = { from: number; linkAttrs: Record<string, unknown>; to: number };
+
+const findMobileAttachmentRange = (editor: TiptapEditor, resourceId: string): AttachmentRange | null => {
+  let match: AttachmentRange | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (!node.isText || !node.text) return;
+    const resourceLink = node.marks.find((mark) =>
+      mark.type.name === "link" &&
+      typeof mark.attrs.href === "string" &&
+      getResourceIdFromUrl(mark.attrs.href) === resourceId
+    );
+    if (!resourceLink) return;
+    match = { from: pos, linkAttrs: resourceLink.attrs, to: pos + node.nodeSize };
+    return false;
+  });
+  return match;
+};
+
+const findMobileImageRange = (editor: TiptapEditor, resourceId: string): ImageUploadPlaceholderMatch | null => {
+  let match: ImageUploadPlaceholderMatch | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === "image" && typeof node.attrs.src === "string" && getResourceIdFromUrl(node.attrs.src) === resourceId) {
+      match = { nodeSize: node.nodeSize, pos };
+      return false;
+    }
+  });
+  return match;
+};
 
 const findImageUploadPlaceholder = (
   editor: TiptapEditor,
@@ -1254,14 +1430,18 @@ const getEditorStyles = (theme: "light" | "dark") => `
   .edgeever-editor-toolbar button:disabled { opacity: 0.38; }
   .tiptap { min-height: 100%; outline: none; }
   .edgeever-editor-shell > div:last-child { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
-  .edgeever-editor-content { min-height: 100%; padding: 18px 12px 32px; font-size: 17px; line-height: 1.7; word-break: break-word; caret-color: #0f766e; }
+  .edgeever-editor-content { min-height: 100%; padding: 18px 12px 32px; font-size: 17px; line-height: ${MEMO_CONTENT_STYLE.body.lineHeight / MEMO_CONTENT_STYLE.body.fontSize}; word-break: break-word; caret-color: #0f766e; }
   .edgeever-editor-content > :first-child { margin-top: 0; }
+  .edgeever-editor-content p { margin: 0 0 ${MEMO_CONTENT_STYLE.body.paragraphSpacing}px; padding: 0; line-height: ${MEMO_CONTENT_STYLE.body.lineHeight / MEMO_CONTENT_STYLE.body.fontSize}; }
   .edgeever-editor-content p.is-editor-empty:first-child::before { float: left; height: 0; color: #94a3b8; content: attr(data-placeholder); pointer-events: none; }
   .edgeever-editor-content h1, .edgeever-editor-content h2, .edgeever-editor-content h3 { line-height: 1.3; }
   .edgeever-editor-content blockquote { margin-left: 0; padding-left: 14px; border-left: 3px solid #5eead4; color: ${theme === "dark" ? "#cbd5e1" : "#475569"}; }
   .edgeever-editor-content pre { overflow-x: auto; border-radius: 10px; padding: 14px 90px 14px 14px; background: #0f172a; color: #e2e8f0; }
   .edgeever-editor-content code { border-radius: 4px; padding: 2px 4px; background: ${theme === "dark" ? "#1e293b" : "#f1f5f9"}; }
   .edgeever-editor-content pre code { padding: 0; background: transparent; }
+  .edgeever-editor-content a.edgeever-attachment-link, .edgeever-editor-content a[href*="/api/v1/resources/"] { display: flex; min-height: 58px; align-items: center; gap: 10px; margin: 8px 0; border: 1px solid ${theme === "dark" ? "#334155" : "#cbd5e1"}; border-radius: 12px; padding: 10px 12px; background: ${theme === "dark" ? "#172033" : "#f8fafc"}; color: ${theme === "dark" ? "#f1f5f9" : "#1e293b"}; font-size: 15px; font-weight: 700; line-height: 1.35; text-decoration: none; }
+  .edgeever-editor-content a.edgeever-attachment-link::before, .edgeever-editor-content a[href*="/api/v1/resources/"]::before { display: inline-flex; width: 38px; height: 38px; flex: 0 0 38px; align-items: center; justify-content: center; border-radius: 9px; background: ${theme === "dark" ? "#134e4a" : "#ecfdf5"}; content: "📎"; font-size: 18px; }
+  .edgeever-editor-content a.edgeever-attachment-link::after, .edgeever-editor-content a[href*="/api/v1/resources/"]::after { margin-left: auto; color: ${theme === "dark" ? "#94a3b8" : "#64748b"}; content: "⋯"; font-size: 22px; font-weight: 700; }
   .edgeever-code-block, .edgeever-mermaid-code-block { position: relative; margin: 18px 0; overflow: visible; background: transparent; }
   .edgeever-code-copy-button { position: absolute; top: 8px; right: 8px; z-index: 1; border: 1px solid ${theme === "dark" ? "#475569" : "#cbded1"}; border-radius: 6px; padding: 5px 8px; background: ${theme === "dark" ? "rgba(30, 41, 59, 0.94)" : "rgba(247, 251, 248, 0.94)"}; color: ${theme === "dark" ? "#cbd5e1" : "#475569"}; font: inherit; font-size: 12px; line-height: 1.35; }
   .edgeever-code-copy-button:active { border-color: #0f766e; color: ${theme === "dark" ? "#86efac" : "#0f766e"}; }
@@ -1292,12 +1472,11 @@ const getEditorStyles = (theme: "light" | "dark") => `
   .edgeever-image-node, .edgeever-image-upload-result { position: relative; display: block; max-width: 100%; margin: 14px auto; line-height: 0; }
   .edgeever-image-node > img, .edgeever-image-upload-result > img { width: 100%; margin: 0; }
   .edgeever-image-node.is-selected > img, .edgeever-image-upload-result.is-selected > img { outline: 2px solid #0f766e; outline-offset: 3px; }
-  .edgeever-image-size-controls { position: absolute; left: 50%; bottom: 8px; z-index: 2; display: flex; width: max-content; max-width: calc(100vw - 40px); align-items: center; gap: 3px; transform: translateX(-50%); border: 1px solid ${theme === "dark" ? "#475569" : "#bbf7d0"}; border-radius: 9px; padding: 4px; background: ${theme === "dark" ? "rgba(15, 23, 42, 0.96)" : "rgba(255, 255, 255, 0.96)"}; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.2); line-height: 1.15; }
+  .edgeever-image-actions { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: inline-flex; width: 42px; height: 42px; appearance: none; align-items: center; justify-content: center; border: 1px solid ${theme === "dark" ? "#475569" : "#cbd5e1"}; border-radius: 999px; background: ${theme === "dark" ? "rgba(15, 23, 42, 0.9)" : "rgba(255, 255, 255, 0.92)"}; color: ${theme === "dark" ? "#e2e8f0" : "#334155"}; font-size: 24px; font-weight: 700; line-height: 1; box-shadow: 0 3px 12px rgba(15, 23, 42, 0.2); }
+  .edgeever-image-size-controls { position: absolute; top: 8px; left: 50%; z-index: 2; display: flex; width: max-content; max-width: calc(100vw - 40px); align-items: center; gap: 3px; transform: translateX(-50%); border: 1px solid ${theme === "dark" ? "#475569" : "#bbf7d0"}; border-radius: 9px; padding: 4px; background: ${theme === "dark" ? "rgba(15, 23, 42, 0.96)" : "rgba(255, 255, 255, 0.96)"}; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.2); line-height: 1.15; }
   .edgeever-image-size-controls[hidden] { display: none; }
-  .edgeever-image-size-button { display: inline-flex; min-width: 52px; min-height: 44px; appearance: none; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; border-radius: 7px; padding: 4px 7px; background: transparent; color: ${theme === "dark" ? "#cbd5e1" : "#475569"}; font: inherit; font-size: 12px; font-weight: 700; }
+  .edgeever-image-size-button { display: inline-flex; min-width: 52px; min-height: 38px; appearance: none; align-items: center; justify-content: center; border: 0; border-radius: 7px; padding: 4px 7px; background: transparent; color: ${theme === "dark" ? "#cbd5e1" : "#475569"}; font: inherit; font-size: 12px; font-weight: 700; }
   .edgeever-image-size-button.is-active { background: ${theme === "dark" ? "#134e4a" : "#ccfbf1"}; color: ${theme === "dark" ? "#99f6e4" : "#0f766e"}; }
-  .edgeever-image-size-percent { color: ${theme === "dark" ? "#94a3b8" : "#94a3b8"}; font-size: 10px; font-weight: 600; }
-  .edgeever-image-size-button.is-active .edgeever-image-size-percent { color: inherit; }
   .edgeever-image-upload-spinner { width: 18px; height: 18px; border: 2px solid ${theme === "dark" ? "#475569" : "#cbd5e1"}; border-top-color: #0f766e; border-radius: 999px; animation: edgeever-image-upload-spin 0.8s linear infinite; }
   @keyframes edgeever-image-upload-spin { to { transform: rotate(360deg); } }
   .edgeever-editor-content hr { margin: 24px 0; border: 0; border-top: 1px solid #cbd5e1; }
