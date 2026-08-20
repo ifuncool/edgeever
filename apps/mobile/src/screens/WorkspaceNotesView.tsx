@@ -1,10 +1,10 @@
-import { memo, type ReactNode } from "react";
+import { memo, useRef, type ReactNode } from "react";
 import type { MemoFilterMode } from "@edgeever/client";
-import type { MemoSummary, Notebook } from "@edgeever/shared";
+import { DEFAULT_MEMO_TITLE, type MemoSummary, type Notebook } from "@edgeever/shared";
 import { MOBILE_UI_METRICS, toggleMobileMemoFilterMode } from "@edgeever/shared/mobile-ui";
-import { ActivityIndicator, FlatList, Platform, RefreshControl, View } from "react-native";
+import { FlatList, Platform, RefreshControl, View } from "react-native";
 import Animated, { FadeInDown, FadeOutUp, LinearTransition, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
-import { Check, ChevronDown, ChevronLeft, MoreHorizontal, Plus, RotateCcw, Search, Sparkles, Tag, X } from "../components/icons";
+import { ActivityIndicator, Check, ChevronDown, ChevronLeft, LayoutTemplate, MoreHorizontal, Plus, RotateCcw, Search, Sparkles, Tag, X } from "../components/icons";
 import { Pressable, Text, TextInput } from "../components/LocalizedText";
 import type { MobileBootstrapProgress } from "../lib/local-mirror";
 import { useMobileLocale } from "../lib/mobile-locale";
@@ -13,7 +13,6 @@ import type { MobileMemoListDensity } from "../lib/preferences";
 import { formatMemoPreviewDate } from "./workspace-utils";
 import { styles } from "./workspace-styles";
 
-const DEFAULT_MEMO_TITLE = "无标题笔记";
 type MemoView = "notebook" | "trash";
 
 export const NotesView = ({
@@ -30,6 +29,7 @@ export const NotesView = ({
   memos,
   notebooks,
   onCreate,
+  onCreateFromTemplate,
   onClearSelection,
   onFilterModeChange,
   onOpenActions,
@@ -59,6 +59,7 @@ export const NotesView = ({
   memos: MemoSummary[];
   notebooks: Notebook[];
   onCreate: () => void;
+  onCreateFromTemplate?: () => void;
   onClearSelection: () => void;
   onFilterModeChange: (filterMode: MemoFilterMode) => void;
   onOpenActions: () => void;
@@ -186,7 +187,14 @@ export const NotesView = ({
       </View>
 
     <MemoList
-      emptyAction={memoView === "notebook" && notebooks.length > 0 ? { label: "新建笔记", onPress: onCreate } : undefined}
+      emptyActions={memoView === "notebook" && notebooks.length > 0 && !searchActive && memoFilterMode === "all"
+        ? [
+          { label: "新建笔记", onPress: onCreate, variant: "primary" as const },
+          ...(onCreateFromTemplate
+            ? [{ label: "从模板新建", onPress: onCreateFromTemplate, variant: "secondary" as const }]
+            : []),
+        ]
+        : undefined}
       emptyDescription={searchActive ? "换个关键词再试" : memoFilterMode !== "all" ? "试试切换筛选条件，或调整搜索关键词。" : memoView === "trash" ? "删除的笔记会显示在这里。" : "先创建一条笔记，之后可以在这里快速预览、搜索和批量整理。"}
       emptyTitle={searchActive ? "没有找到匹配笔记" : memoFilterMode !== "all" ? "没有符合筛选的笔记" : memoView === "trash" ? "回收站为空" : "暂无笔记"}
       error={error}
@@ -211,7 +219,7 @@ export const NotesView = ({
 
 
 const MemoList = ({
-  emptyAction,
+  emptyActions,
   emptyDescription,
   emptyTitle,
   error,
@@ -230,7 +238,7 @@ const MemoList = ({
   selectionMode = false,
   selectedMemoIds = new Set(),
 }: {
-  emptyAction?: { label: string; onPress: () => void };
+  emptyActions?: Array<{ label: string; onPress: () => void; variant?: "primary" | "secondary" }>;
   emptyDescription: string;
   emptyTitle: string;
   error?: unknown;
@@ -323,11 +331,27 @@ const MemoList = ({
         <View style={styles.memoListEmptyCard}>
           <Text style={styles.emptyTitle}>{emptyTitle}</Text>
           <Text style={styles.mutedText}>{emptyDescription}</Text>
-          {emptyAction ? (
-            <Pressable accessibilityRole="button" onPress={emptyAction.onPress} style={styles.emptyActionButton}>
-              <Plus color="#ffffff" size={18} />
-              <Text style={styles.emptyActionButtonText}>{emptyAction.label}</Text>
-            </Pressable>
+          {emptyActions && emptyActions.length > 0 ? (
+            <View style={styles.emptyActionRow}>
+              {emptyActions.map((action) => {
+                const isSecondary = action.variant === "secondary";
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    key={action.label}
+                    onPress={action.onPress}
+                    style={isSecondary ? styles.emptyActionSecondaryButton : styles.emptyActionButton}
+                  >
+                    {isSecondary
+                      ? <LayoutTemplate color="#0f172a" size={16} />
+                      : <Plus color="#ffffff" size={18} />}
+                    <Text style={isSecondary ? styles.emptyActionSecondaryButtonText : styles.emptyActionButtonText}>
+                      {action.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
           ) : null}
         </View>
       }
@@ -395,6 +419,7 @@ const MemoCard = memo(function MemoCard({
 }) {
   const localePreference = useMobileLocale().preference;
   const memoTitle = memo.title?.trim() || DEFAULT_MEMO_TITLE;
+  const handledLongPressRef = useRef(false);
   const pressScale = useSharedValue(1);
   const pressAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: pressScale.value }],
@@ -429,8 +454,17 @@ const MemoCard = memo(function MemoCard({
         accessibilityLabel={memoTitle}
         accessibilityRole="button"
         delayLongPress={520}
-        onLongPress={onLongPress}
-        onPress={onPress}
+        onLongPress={() => {
+          handledLongPressRef.current = true;
+          onLongPress?.();
+        }}
+        onPress={() => {
+          if (handledLongPressRef.current) {
+            handledLongPressRef.current = false;
+            return;
+          }
+          onPress();
+        }}
         onPressIn={() => {
           pressScale.value = withTiming(0.985, { duration: 100 });
         }}

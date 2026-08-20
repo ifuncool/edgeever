@@ -21,13 +21,15 @@ const DEFAULT_REPOSITORY = "tianma-if/edgeever";
 const VERSION_BUMPS = new Set(["patch", "minor", "major"]);
 const POLL_INTERVAL_MS = 10_000;
 const RUN_DISCOVERY_TIMEOUT_MS = 60_000;
-const RELEASE_WORKFLOWS = {
+export const RELEASE_WORKFLOWS = {
   desktop: "desktop-build.yml",
   mobile: "mobile-build.yml",
+  docker: "docker-image.yml",
   demo: "deploy-demo.yml",
 };
 
 export const RELEASE_VALIDATIONS = [
+  { label: "Project regression tests", args: ["run", "test"] },
   { label: "Web typecheck", args: ["run", "typecheck"] },
   { label: "Mobile typecheck", args: ["run", "typecheck:mobile"] },
   { label: "Web build", args: ["run", "build:web"] },
@@ -40,6 +42,8 @@ export const RELEASE_VALIDATIONS = [
       "scripts/release.test.mjs",
       "scripts/validate-store-delivery.test.mjs",
       "scripts/store-delivery.test.mjs",
+      "scripts/download-play-universal-apk.test.mjs",
+      "scripts/desktop-icns.test.mjs",
       "apps/web/src/lib/version-check.test.mjs",
       "apps/mobile/src/lib/mobile-release.test.ts",
     ],
@@ -48,7 +52,7 @@ export const RELEASE_VALIDATIONS = [
 
 const usage = `Usage:
   bun run release -- \\
-    --bump minor \\
+    --bump patch \\
     --issue-title "Release issue title" \\
     --label bug \\
     --change-en "English user-facing change" \\
@@ -66,6 +70,7 @@ Options:
   --label <label>            Required Issue label; may be repeated
   --change-en <text>         Required English release bullet; may be repeated
   --change-zh <text>         Required Chinese release bullet; may be repeated
+  --change-locale <tag:text> Optional localized bullet; repeat once per change and locale
   --change-commit <sha,...>  Commits covered by the corresponding bilingual bullet
   --ignore-commit <sha:why>  Explicitly exclude a non-user-facing commit; may be repeated
   --skip-install             Do not install the final DMG after publication
@@ -81,6 +86,7 @@ export const parseReleaseArgs = (argv) => {
     labels: [],
     changesEn: [],
     changesZh: [],
+    localizedChanges: [],
     changeCommits: [],
     ignoredCommits: [],
     skipInstall: false,
@@ -95,6 +101,7 @@ export const parseReleaseArgs = (argv) => {
     ["--label", "labels"],
     ["--change-en", "changesEn"],
     ["--change-zh", "changesZh"],
+    ["--change-locale", "localizedChanges"],
     ["--change-commit", "changeCommits"],
     ["--ignore-commit", "ignoredCommits"],
   ]);
@@ -154,6 +161,25 @@ export const parseReleaseArgs = (argv) => {
   if (options.changesEn.length !== options.changeCommits.length) {
     throw new Error("Each bilingual change requires one corresponding --change-commit value.");
   }
+  const localizedChanges = {};
+  for (const value of options.localizedChanges) {
+    const separator = value.indexOf(":");
+    const locale = separator === -1 ? "" : value.slice(0, separator).trim();
+    const change = separator === -1 ? "" : value.slice(separator + 1).trim();
+    if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(locale) || !change) {
+      throw new Error('--change-locale must use "<locale>:<user-facing change>".');
+    }
+    if (["en-us", "zh-cn"].includes(locale.toLowerCase())) {
+      throw new Error("Use --change-en and --change-zh for en-US and zh-CN release changes.");
+    }
+    (localizedChanges[locale] ??= []).push(change);
+  }
+  for (const [locale, changes] of Object.entries(localizedChanges)) {
+    if (changes.length !== options.changesEn.length) {
+      throw new Error(`--change-locale ${locale} must provide one translation for every release change.`);
+    }
+  }
+  options.localizedChanges = localizedChanges;
   return options;
 };
 
@@ -241,6 +267,66 @@ export const nextVersion = (version, bump) => {
   return `${major}.${minor}.${patch + 1}`;
 };
 
+export const resolveReleaseVersion = ({
+  previousVersion,
+  packageVersion,
+  bump,
+  headSha,
+  draftCandidate = null,
+  draftTargetIsAncestor = false,
+}) => {
+  const expectedNextVersion = nextVersion(previousVersion, bump);
+  if (packageVersion === previousVersion) {
+    return {
+      releaseVersion: expectedNextVersion,
+      releaseBaseTag: `v${previousVersion}`,
+      resumedDraft: null,
+      withdrawnDraft: null,
+    };
+  }
+
+  if (
+    !draftCandidate ||
+    draftCandidate.tagName !== `v${packageVersion}` ||
+    !draftCandidate.isDraft ||
+    draftCandidate.isPrerelease
+  ) {
+    throw new Error(
+      `package.json version ${packageVersion} must match ${previousVersion}, or a compatible stable Draft.`,
+    );
+  }
+
+  if (draftCandidate.targetCommitish === headSha) {
+    if (packageVersion !== expectedNextVersion) {
+      throw new Error(
+        `${draftCandidate.tagName} cannot resume because --bump ${bump} expects v${expectedNextVersion}.`,
+      );
+    }
+    return {
+      releaseVersion: packageVersion,
+      releaseBaseTag: `v${previousVersion}`,
+      resumedDraft: draftCandidate,
+      withdrawnDraft: null,
+    };
+  }
+
+  if (!draftTargetIsAncestor) {
+    throw new Error(
+      `${draftCandidate.tagName} is not compatible with the current HEAD or its history.`,
+    );
+  }
+
+  return {
+    releaseVersion: nextVersion(packageVersion, bump),
+    // A withdrawn release does not become the audit baseline. Keep the latest
+    // published release as the source for commit coverage, changed-file plans,
+    // and reusable native assets so the replacement release stays cumulative.
+    releaseBaseTag: `v${previousVersion}`,
+    resumedDraft: null,
+    withdrawnDraft: draftCandidate,
+  };
+};
+
 export const buildReleaseTitle = (tag) => {
   if (!/^v\d+\.\d+\.\d+$/.test(tag)) {
     throw new Error(`Expected a stable vX.Y.Z tag, received: ${tag}`);
@@ -280,12 +366,6 @@ export const buildReleaseNotes = ({
   changesZh,
   issueNumber,
 }) => [
-  "## Key Changes",
-  "",
-  ...changesEn.map((change) => `- ${change}`),
-  "",
-  `Related Issue: #${issueNumber}`,
-  "",
   "## 🇨🇳 中文说明 / Chinese Changelog",
   "",
   "## 主要更新",
@@ -294,7 +374,22 @@ export const buildReleaseNotes = ({
   "",
   `关联 Issue：#${issueNumber}`,
   "",
+  "## Key Changes",
+  "",
+  ...changesEn.map((change) => `- ${change}`),
+  "",
+  `Related Issue: #${issueNumber}`,
+  "",
 ].join("\n");
+
+export const buildReleaseSummary = ({ version, changesEn, changesZh, localizedChanges = {} }) => ({
+  version,
+  changes: {
+    "en-US": [...changesEn],
+    "zh-CN": [...changesZh],
+    ...Object.fromEntries(Object.entries(localizedChanges).map(([locale, changes]) => [locale, [...changes]])),
+  },
+});
 
 export const reusedAssetMatches = (previousAssets, currentAssets, name) => {
   const previous = previousAssets.find((asset) => asset.name === name);
@@ -428,11 +523,17 @@ const assertReleasePreconditions = ({ repository, previousTag }) => {
   }
 };
 
-const updateReleaseVersions = ({ nextVersion, desktopRebuild, mobileRebuild }) => {
-  const changedPaths = ["package.json"];
+const updateReleaseVersions = ({ nextVersion, desktopRebuild, mobileRebuild, changesEn, changesZh, localizedChanges }) => {
+  const changedPaths = ["package.json", "release-summary.json"];
   const rootPackage = readJson("package.json");
   rootPackage.version = nextVersion;
   writeJson("package.json", rootPackage);
+  writeJson("release-summary.json", buildReleaseSummary({
+    version: nextVersion,
+    changesEn,
+    changesZh,
+    localizedChanges,
+  }));
 
   if (desktopRebuild) {
     const desktopPackage = readJson("apps/desktop/package.json");
@@ -753,11 +854,11 @@ const releaseMain = async (options) => {
 
   const rootPackage = readJson("package.json");
   const previousVersion = previousTag.replace(/^v/, "");
-  const expectedNextVersion = nextVersion(previousVersion, options.bump);
   const headShaBeforeRelease = run("git", ["rev-parse", "HEAD"], { capture: true });
-  let resumedDraft = null;
-  if (rootPackage.version === expectedNextVersion) {
-    const draftCandidate = ghJson([
+  let draftCandidate = null;
+  let draftTargetIsAncestor = false;
+  if (rootPackage.version !== previousVersion) {
+    draftCandidate = ghJson([
       "release",
       "view",
       `v${rootPackage.version}`,
@@ -766,28 +867,38 @@ const releaseMain = async (options) => {
       "--json",
       "tagName,isDraft,isPrerelease,targetCommitish,body,assets,url",
     ]);
-    if (
-      !draftCandidate.isDraft ||
-      draftCandidate.isPrerelease ||
-      draftCandidate.targetCommitish !== headShaBeforeRelease
-    ) {
-      throw new Error(
-        `${draftCandidate.tagName} exists but is not a compatible Draft for the current HEAD.`,
-      );
+    if (draftCandidate.targetCommitish !== headShaBeforeRelease) {
+      draftTargetIsAncestor = run(
+        "git",
+        ["merge-base", "--is-ancestor", draftCandidate.targetCommitish, headShaBeforeRelease],
+        { allowFailure: true },
+      ).status === 0;
     }
-    resumedDraft = draftCandidate;
-  } else if (rootPackage.version !== previousVersion) {
-    throw new Error(
-      `package.json version ${rootPackage.version} must match ${previousVersion}, or ${expectedNextVersion} with a resumable Draft.`,
+  }
+  const {
+    releaseVersion,
+    releaseBaseTag,
+    resumedDraft,
+    withdrawnDraft,
+  } = resolveReleaseVersion({
+    previousVersion,
+    packageVersion: rootPackage.version,
+    bump: options.bump,
+    headSha: headShaBeforeRelease,
+    draftCandidate,
+    draftTargetIsAncestor,
+  });
+  const tag = `v${releaseVersion}`;
+  if (withdrawnDraft) {
+    console.log(
+      `[release] ${withdrawnDraft.tagName} is a withdrawn Draft; reserving that version and continuing with ${tag}.`,
     );
   }
-  const releaseVersion = resumedDraft ? rootPackage.version : expectedNextVersion;
-  const tag = `v${releaseVersion}`;
-  const changedFiles = changedFilesBetween(previousTag, headShaBeforeRelease);
+  const changedFiles = changedFilesBetween(releaseBaseTag, headShaBeforeRelease);
   if (changedFiles.length === 0) {
-    throw new Error(`There are no committed changes after ${previousTag}.`);
+    throw new Error(`There are no committed changes after ${releaseBaseTag}.`);
   }
-  const releaseCommits = releaseCommitsBetween(previousTag, headShaBeforeRelease);
+  const releaseCommits = releaseCommitsBetween(releaseBaseTag, headShaBeforeRelease);
   const commitCoverageAudit = auditReleaseCommitCoverage({
     commits: releaseCommits,
     changeCommits: options.changeCommits,
@@ -797,7 +908,7 @@ const releaseMain = async (options) => {
   const desktopPlan = planNativeRelease("desktop", changedFiles);
   const mobilePlan = planNativeRelease("mobile", changedFiles);
 
-  console.log(`[release] ${previousTag} -> ${tag}`);
+  console.log(`[release] ${releaseBaseTag} -> ${tag}`);
   console.log(`[release] desktop: ${desktopPlan.rebuild ? "rebuild" : "reuse"}`);
   console.log(`[release] Android: ${mobilePlan.rebuild ? "rebuild" : "reuse"}`);
 
@@ -805,6 +916,7 @@ const releaseMain = async (options) => {
     console.log(buildReleaseNotes({
       changesEn: options.changesEn,
       changesZh: options.changesZh,
+      localizedChanges: options.localizedChanges,
       issueNumber: 0,
     }));
     return;
@@ -845,6 +957,8 @@ const releaseMain = async (options) => {
       nextVersion: releaseVersion,
       desktopRebuild: desktopPlan.rebuild,
       mobileRebuild: mobilePlan.rebuild,
+      changesEn: options.changesEn,
+      changesZh: options.changesZh,
     });
     run("git", ["add", ...versionPaths]);
     run("git", ["diff", "--cached", "--check"]);
@@ -874,7 +988,7 @@ const releaseMain = async (options) => {
     console.log(`[release] Draft created: ${draftUrl}`);
   }
 
-  const [desktopRunId, mobileRunId] = await Promise.all([
+  const [desktopRunId, mobileRunId, dockerRunId] = await Promise.all([
     dispatchReleaseWorkflow({
       repository: options.repository,
       workflow: RELEASE_WORKFLOWS.desktop,
@@ -884,6 +998,12 @@ const releaseMain = async (options) => {
     dispatchReleaseWorkflow({
       repository: options.repository,
       workflow: RELEASE_WORKFLOWS.mobile,
+      tag,
+      headSha: releaseSha,
+    }),
+    dispatchReleaseWorkflow({
+      repository: options.repository,
+      workflow: RELEASE_WORKFLOWS.docker,
       tag,
       headSha: releaseSha,
     }),
@@ -898,6 +1018,11 @@ const releaseMain = async (options) => {
       repository: options.repository,
       runId: mobileRunId,
       label: "Draft Android assets",
+    }),
+    waitForRun({
+      repository: options.repository,
+      runId: dockerRunId,
+      label: "Draft Docker image",
     }),
   ]);
 
@@ -937,7 +1062,7 @@ const releaseMain = async (options) => {
   ], { capture: true });
   console.log(`[release] published: ${releaseUrl}`);
 
-  const [desktopAudit, mobileAudit] = await Promise.all([
+  const [desktopAudit, mobileAudit, dockerAudit] = await Promise.all([
     findReleaseRun({
       repository: options.repository,
       workflow: RELEASE_WORKFLOWS.desktop,
@@ -948,6 +1073,13 @@ const releaseMain = async (options) => {
     findReleaseRun({
       repository: options.repository,
       workflow: RELEASE_WORKFLOWS.mobile,
+      tag,
+      headSha: releaseSha,
+      publishedAfter: publishedAt,
+    }),
+    findReleaseRun({
+      repository: options.repository,
+      workflow: RELEASE_WORKFLOWS.docker,
       tag,
       headSha: releaseSha,
       publishedAfter: publishedAt,
@@ -979,6 +1111,11 @@ const releaseMain = async (options) => {
         runId: mobileAudit.databaseId,
         label: "Published Android asset audit",
       }),
+      waitForRun({
+        repository: options.repository,
+        runId: dockerAudit.databaseId,
+        label: "Published Docker image audit",
+      }),
     ]);
   } catch (error) {
     run("gh", [
@@ -999,7 +1136,7 @@ const releaseMain = async (options) => {
     "--repo",
     options.repository,
     "--body",
-    `Released in [${tag}](${releaseUrl}).\n\nRequired local validations, Draft asset preparation, and post-publication native asset audits passed.`,
+    `Released in [${tag}](${releaseUrl}).\n\nRequired local validations, Draft asset and image preparation, and post-publication audits passed.`,
   ]);
   run("gh", [
     "issue",

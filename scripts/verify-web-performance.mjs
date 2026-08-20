@@ -23,12 +23,22 @@ assert.doesNotMatch(precacheManifest, /\{url:"index\.html",/, "Current HTML must
 assert.match(precacheManifest, /index\.html\?edgeever-offline-shell=/, "PWA must retain a versioned offline HTML shell");
 const optionalDiagramPattern = /(?:beautiful-mermaid|vendor-mermaid|mermaid\.core|[^"']*Diagram-)[^"']*\.js/;
 assert.doesNotMatch(precacheManifest, optionalDiagramPattern, "Optional diagram chunks must remain out of the initial PWA precache");
+assert.doesNotMatch(precacheManifest, /noto-sans-sc-[^"']*\.woff2/, "Print-only Noto Sans SC shards must remain out of the PWA precache");
 
-const entryCount = (precacheManifest.match(/\{url:/g) ?? []).length;
+const precacheURLs = [...precacheManifest.matchAll(/\{url:"([^"]+)"/g)].map((match) => match[1]);
+const entryCount = precacheURLs.length;
 assert.ok(entryCount > 0, "Web service worker precache manifest must not be empty");
+const precacheBytes = precacheURLs
+  .filter((url) => !url.startsWith("/") && !url.includes("?"))
+  .map((url) => statSync(join(distDirectory, url)).size)
+  .reduce((total, size) => total + size, 0);
+const PRECACHE_BUDGET = 5 * 1024 * 1024;
+assert.ok(precacheBytes <= PRECACHE_BUDGET, `PWA precache budget exceeded: ${precacheBytes} > ${PRECACHE_BUDGET}`);
 const modulePreloads = indexHtml.match(/<link rel="modulepreload"[^>]+>/g)?.join("\n") ?? "";
 const initialOptionalPattern = /vendor-code-highlight|vendor-D3|beautiful-mermaid|vendor-(?:mermaid|tiptap|prosemirror|floating)|ui-primitives|mermaid\.core|[^"']*Diagram-/;
 assert.doesNotMatch(modulePreloads, initialOptionalPattern, "Optional editor and diagram chunks must remain out of the initial HTML modulepreload list");
+assert.doesNotMatch(modulePreloads, /ui-button-tooltip/, "Button tooltips must load only when a titled button is rendered");
+assert.doesNotMatch(modulePreloads, /vendor-radix(?!-slot)/, "Radix overlays must remain out of the initial HTML modulepreload list");
 const initialModulePreloadBytes = [...indexHtml.matchAll(/<link rel="modulepreload"[^>]+href="([^"]+)"[^>]*>/g)]
   .map((match) => statSync(join(distDirectory, match[1].replace(/^\//, ""))).size)
   .reduce((total, size) => total + size, 0);
@@ -36,7 +46,7 @@ const INITIAL_MODULE_PRELOAD_BUDGET = 700 * 1024;
 assert.ok(initialModulePreloadBytes <= INITIAL_MODULE_PRELOAD_BUDGET, `Initial modulepreload budget exceeded: ${initialModulePreloadBytes} > ${INITIAL_MODULE_PRELOAD_BUDGET}`);
 
 const DEFAULT_CHUNK_WARNING_BYTES = 500 * 1024;
-const allowedLargeChunkPattern = /^(?:vendor-(?:beautiful-mermaid|mermaid-(?:layout|render))|.*Diagram-).*\.js$/;
+const allowedLargeChunkPattern = /^(?:vendor-(?:code-highlight|beautiful-mermaid|mermaid-(?:layout|render))|.*Diagram-).*\.js$/;
 const largeChunks = readdirSync(join(distDirectory, "assets"))
   .filter((name) => name.endsWith(".js"))
   .map((name) => ({ name, size: statSync(join(distDirectory, "assets", name)).size }))
@@ -50,16 +60,19 @@ assert.ok(
 );
 assert.ok(
   largeChunks.every(({ name }) => !modulePreloads.includes(name)),
-  "Large optional diagram chunks must not be module-preloaded by the app entry",
+  "Large optional chunks must not be module-preloaded by the app entry",
 );
+const nonPrecachedLargeChunks = largeChunks.filter(({ name }) => !name.startsWith("vendor-code-highlight-"));
 assert.ok(
-  largeChunks.every(({ name }) => !precacheManifest.includes(name)),
+  nonPrecachedLargeChunks.every(({ name }) => !precacheManifest.includes(name)),
   "Large optional diagram chunks must not be included in the PWA precache",
 );
 
 console.log(JSON.stringify({
   ok: true,
   precacheEntries: entryCount,
+  precacheBytes,
+  precacheBudget: PRECACHE_BUDGET,
   initialModulePreloadBytes,
   initialModulePreloadBudget: INITIAL_MODULE_PRELOAD_BUDGET,
   largeDeferredChunks: largeChunks,

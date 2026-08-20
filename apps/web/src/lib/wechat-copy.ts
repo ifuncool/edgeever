@@ -1,6 +1,7 @@
 import type { Editor } from "@tiptap/react";
 import { MEMO_CONTENT_STYLE } from "@edgeever/shared";
 import { marked } from "marked";
+import { copyHtmlToClipboard } from "@/lib/clipboard";
 import { parseCustomCssToStyles } from "@/lib/css-sandbox";
 
 const BODY_LINE_HEIGHT = MEMO_CONTENT_STYLE.body.lineHeight / MEMO_CONTENT_STYLE.body.fontSize;
@@ -74,8 +75,12 @@ const applyInlineStyles = (
   root.querySelectorAll<HTMLElement>("*").forEach((element) => {
     const tagName = element.tagName.toLowerCase();
     let style = WECHAT_STYLES[tagName] || "";
+    const isMergeDivider =
+      tagName === "hr" && element.matches("[data-edgeever-merge-divider], .edgeever-merge-divider");
 
-    if (customColors) {
+    if (isMergeDivider) {
+      style = `margin: 1.75em 0; border: 0; border-top: 2px solid ${accent};`;
+    } else if (customColors) {
       if (tagName === "p") {
         style = `margin: 0 0 ${PARAGRAPH_SPACING}; padding: 0; line-height: ${BODY_LINE_HEIGHT}; font-size: ${BODY_FONT_SIZE}; color: ${textColor};`;
       } else if (tagName === "h1" || tagName === "h2" || tagName === "h3") {
@@ -380,31 +385,6 @@ export const buildWeChatClipboardHtml = async (editor: Editor) => {
   const originalImages = Array.from(editor.view.dom.querySelectorAll<HTMLImageElement>("img"));
   await embedImagesForWeChat(container, originalImages);
   return container.outerHTML;
-};
-
-const copyHtmlToClipboard = async (html: string, plainText: string) => {
-  if (navigator.clipboard && "ClipboardItem" in window) {
-    await navigator.clipboard.write([new ClipboardItem({
-      "text/html": new Blob([html], { type: "text/html" }),
-      "text/plain": new Blob([plainText], { type: "text/plain" }),
-    })]);
-    return;
-  }
-
-  const selection = window.getSelection();
-  const range = document.createRange();
-  const container = document.createElement("div");
-  container.setAttribute("contenteditable", "true");
-  container.style.cssText = "position: fixed; left: -99999px; top: 0;";
-  container.innerHTML = html;
-  document.body.appendChild(container);
-  range.selectNodeContents(container);
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-  const copied = document.execCommand("copy");
-  selection?.removeAllRanges();
-  container.remove();
-  if (!copied) throw new Error("Clipboard copy was not available");
 };
 
 export const copyEditorToWeChat = async (editor: Editor) =>

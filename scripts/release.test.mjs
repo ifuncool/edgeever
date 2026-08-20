@@ -3,14 +3,29 @@ import {
   auditReleaseCommitCoverage,
   buildIssueBody,
   buildReleaseNotes,
+  buildReleaseSummary,
   buildReleaseTitle,
   nextVersion,
   parseReleaseArgs,
+  RELEASE_WORKFLOWS,
+  RELEASE_VALIDATIONS,
+  resolveReleaseVersion,
   reusedAssetMatches,
   selectPublishedDmg,
 } from "./release.mjs";
 
 describe("release automation", () => {
+  test("prepares and audits the official Docker image with every formal release", () => {
+    expect(RELEASE_WORKFLOWS.docker).toBe("docker-image.yml");
+  });
+
+  test("runs the complete project regression suite before release", () => {
+    expect(RELEASE_VALIDATIONS).toContainEqual({
+      label: "Project regression tests",
+      args: ["run", "test"],
+    });
+  });
+
   test("parses paired bilingual changes and labels", () => {
     expect(
       parseReleaseArgs([
@@ -24,6 +39,8 @@ describe("release automation", () => {
         "Run checks in parallel.",
         "--change-zh",
         "并行运行检查。",
+        "--change-locale",
+        "ja-JP:チェックを並列実行します。",
         "--change-commit",
         "abc1234",
       ]),
@@ -33,6 +50,7 @@ describe("release automation", () => {
       labels: ["enhancement"],
       changesEn: ["Run checks in parallel."],
       changesZh: ["并行运行检查。"],
+      localizedChanges: { "ja-JP": ["チェックを並列実行します。"] },
       changeCommits: ["abc1234"],
     });
   });
@@ -58,6 +76,65 @@ describe("release automation", () => {
     expect(nextVersion("1.6.50", "major")).toBe("2.0.0");
     expect(() => nextVersion("1.6", "patch")).toThrow("stable X.Y.Z");
     expect(() => nextVersion("1.6.50", "automatic")).toThrow("patch, minor, or major");
+  });
+
+  test("resumes a Draft only when it matches the requested version and HEAD", () => {
+    const draftCandidate = {
+      tagName: "v1.17.1",
+      isDraft: true,
+      isPrerelease: false,
+      targetCommitish: "current-head",
+    };
+    expect(resolveReleaseVersion({
+      previousVersion: "1.17.0",
+      packageVersion: "1.17.1",
+      bump: "patch",
+      headSha: "current-head",
+      draftCandidate,
+    })).toMatchObject({
+      releaseVersion: "1.17.1",
+      releaseBaseTag: "v1.17.0",
+      resumedDraft: draftCandidate,
+      withdrawnDraft: null,
+    });
+  });
+
+  test("reserves a withdrawn Draft version and keeps the published audit baseline", () => {
+    const draftCandidate = {
+      tagName: "v1.17.1",
+      isDraft: true,
+      isPrerelease: false,
+      targetCommitish: "withdrawn-release",
+    };
+    expect(resolveReleaseVersion({
+      previousVersion: "1.17.0",
+      packageVersion: "1.17.1",
+      bump: "patch",
+      headSha: "current-head",
+      draftCandidate,
+      draftTargetIsAncestor: true,
+    })).toMatchObject({
+      releaseVersion: "1.17.2",
+      releaseBaseTag: "v1.17.0",
+      resumedDraft: null,
+      withdrawnDraft: draftCandidate,
+    });
+  });
+
+  test("rejects a Draft from unrelated history", () => {
+    expect(() => resolveReleaseVersion({
+      previousVersion: "1.17.0",
+      packageVersion: "1.17.1",
+      bump: "patch",
+      headSha: "current-head",
+      draftCandidate: {
+        tagName: "v1.17.1",
+        isDraft: true,
+        isPrerelease: false,
+        targetCommitish: "unrelated-head",
+      },
+      draftTargetIsAncestor: false,
+    })).toThrow("current HEAD or its history");
   });
 
   test("uses the stable tag as the GitHub Release title", () => {
@@ -92,12 +169,32 @@ describe("release automation", () => {
     expect(notes).toContain("Related Issue: #126");
     expect(notes).toContain("## 🇨🇳 中文说明 / Chinese Changelog");
     expect(notes).toContain("关联 Issue：#126");
+    expect(notes.indexOf("## 🇨🇳 中文说明 / Chinese Changelog"))
+      .toBeLessThan(notes.indexOf("## Key Changes"));
+    expect(notes.indexOf("优化发布流程。"))
+      .toBeLessThan(notes.indexOf("Improve the release flow."));
     expect(notes).not.toContain("## Verification");
     expect(notes).not.toContain("## 验证");
     expect(notes).not.toContain("bun run");
     expect(notes).not.toContain("Version bump");
     expect(notes).not.toContain("release plan");
     expect(notes).not.toContain("\\n");
+  });
+
+  test("builds the in-app summary from the same bilingual release changes", () => {
+    expect(buildReleaseSummary({
+      version: "1.6.55",
+      changesEn: ["Improve the release flow."],
+      changesZh: ["优化发布流程。"],
+      localizedChanges: { "ja-JP": ["リリースフローを改善します。"] },
+    })).toEqual({
+      version: "1.6.55",
+      changes: {
+        "en-US": ["Improve the release flow."],
+        "zh-CN": ["优化发布流程。"],
+        "ja-JP": ["リリースフローを改善します。"],
+      },
+    });
   });
 
   test("builds a bilingual umbrella Issue", () => {

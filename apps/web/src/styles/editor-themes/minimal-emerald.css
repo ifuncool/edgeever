@@ -70,7 +70,7 @@
 
 .edgeever-editor[data-editor-theme="minimal-emerald"]:not([data-editor-theme="default"]) .ProseMirror strong {
   color: var(--editor-theme-heading);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .edgeever-editor[data-editor-theme="minimal-emerald"]:not([data-editor-theme="default"]) .ProseMirror a {
@@ -112,7 +112,7 @@
   padding: 0.75rem 1rem;
 }
 
-.edgeever-editor[data-editor-theme="minimal-emerald"]:not([data-editor-theme="default"]) .ProseMirror hr {
+.edgeever-editor[data-editor-theme="minimal-emerald"]:not([data-editor-theme="default"]) .ProseMirror hr:not([data-edgeever-merge-divider]) {
   height: 1px;
   border: 0;
   background: var(--editor-theme-border);

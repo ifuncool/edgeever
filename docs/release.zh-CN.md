@@ -6,7 +6,7 @@
 
 ```bash
 bun run release -- \
-  --bump minor \
+  --bump patch \
   --issue-title "Improve the release workflow" \
   --label enhancement \
   --change-en "Run required release checks in parallel." \
@@ -36,24 +36,25 @@ bun run release -- \
 
 ## EdgeEver 特有规则
 
-- 正式 Tag 和 Release 标题使用 `vX.Y.Z`。
+- 正式 Tag 和 Release 标题使用 `vX.Y.Z`。`--bump` 须显式指定，按 SemVer 选择；
+  禁止因发版节奏把用户可感知的新能力或新平台压成 patch（详见 `AGENTS.md`）。
 - 根版本表示整体产品 Release。只有对应原生运行时重建时，才更新原生展示版本。
   Android `versionCode` 和 iOS Build Number 是相互独立且严格递增的标识。
 - 每个正式 Release 包含 macOS arm64 与 x64 DMG、按架构区分的更新 ZIP，以及
   Android arm64 APK。未变化的原生资产沿用原文件名、版本和校验和。
 - 桌面端和 Android 更新检查使用对应 Release 资产中记录的版本，而不是整体
   GitHub Tag，避免仅涉及 Web 或 API 的 Release 触发无效原生更新。
-- 脚本负责创建跟踪 Issue 和 Draft Release、验证或复用原生资产、正式发布、
-  关闭 Issue，并安装与当前 Mac 架构匹配的 DMG。输出 Actions 链接后，Demo
-  部署会独立继续执行。
+- 脚本负责创建跟踪 Issue 和 Draft Release、验证或复用原生资产、准备多架构
+  Docker 镜像、正式发布、关闭 Issue，并安装与当前 Mac 架构匹配的 DMG。
+  输出 Actions 链接后，Demo 部署会独立继续执行。
 - 此命令不执行移动端商店交付，详见
   [移动端商店交付](store-delivery.zh-CN.md)。
 
 ## 失败与续跑
 
-- 本地验证或 Draft 资产失败时，Release 保持未发布状态。
+- 本地验证、Draft 资产或 Docker 镜像失败时，Release 保持未发布状态。
 - 中断后重新执行相同命令，会续跑匹配的 Draft，不会重复创建 Issue、提交或
   Release。
-- 发布后的原生资产审计失败时，脚本会尝试将 Release 恢复为 Draft，并保留
-  Issue。
+- 发布后的原生资产或 Docker 镜像审计失败时，脚本会尝试将 Release 恢复为
+  Draft，并保留 Issue。
 - 替换应用失败时，脚本会尽可能从 macOS 废纸篓备份恢复上一版应用。

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
@@ -65,6 +65,7 @@ export type EditorThemeName = string;
 export interface ThemeColors {
   background: string;
   text: string;
+  muted: string;
   heading: string;
   accent: string;
   soft: string;
@@ -82,6 +83,7 @@ export interface CustomEditorTheme {
 export const DEFAULT_CUSTOM_LIGHT_COLORS: ThemeColors = {
   background: "#fffdf7",
   text: "#292524",
+  muted: "#57534e",
   heading: "#1c1917",
   accent: "#0f766e",
   soft: "#f0fdfa",
@@ -91,8 +93,9 @@ export const DEFAULT_CUSTOM_LIGHT_COLORS: ThemeColors = {
 export const DEFAULT_CUSTOM_DARK_COLORS: ThemeColors = {
   background: "#1c1917",
   text: "#fafaf9",
+  muted: "#d6d3d1",
   heading: "#fafaf9",
-  accent: "#0d9488",
+  accent: "#2dd4bf",
   soft: "#292524",
   border: "#44403c",
 };
@@ -105,14 +108,20 @@ export const DEFAULT_CUSTOM_EDITOR_THEME: CustomEditorTheme = {
   customCss: "",
 };
 
-interface ThemeContextValue {
+interface AppearanceThemeContextValue {
   preference: ThemePreference;
   resolvedTheme: ResolvedTheme;
   setPreference: (preference: ThemePreference) => void;
+}
+
+interface MermaidThemeContextValue {
   mermaidTheme: MermaidThemeName;
   setMermaidTheme: (theme: MermaidThemeName) => void;
   mermaidRenderer: MermaidRenderer;
   setMermaidRenderer: (renderer: MermaidRenderer) => void;
+}
+
+interface EditorThemeContextValue {
   editorTheme: EditorThemeName;
   setEditorTheme: (theme: EditorThemeName) => void;
   customEditorThemes: CustomEditorTheme[];
@@ -133,7 +142,9 @@ const CUSTOM_EDITOR_THEME_STORAGE_KEY = "edgeever.custom-editor-theme";
 const CUSTOM_EDITOR_THEMES_STORAGE_KEY = "edgeever.custom-editor-themes";
 const LIGHT_THEME_COLOR = "#f8fafc";
 const DARK_THEME_COLOR = "#0f172a";
-const ThemeContext = createContext<ThemeContextValue | null>(null);
+const AppearanceThemeContext = createContext<AppearanceThemeContextValue | null>(null);
+const MermaidThemeContext = createContext<MermaidThemeContextValue | null>(null);
+const EditorThemeContext = createContext<EditorThemeContextValue | null>(null);
 
 const getSystemTheme = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -141,34 +152,53 @@ const getSystemTheme = () =>
 const resolveTheme = (preference: ThemePreference): ResolvedTheme =>
   preference === "system" ? getSystemTheme() : preference;
 
-export const getStoredThemePreference = (): ThemePreference => {
-  if (typeof window === "undefined") {
-    return "system";
+// localStorage can be missing or blocked in restricted browsers, private mode,
+// and unit tests that stub `window` without a storage implementation.
+const readLocalStorageItem = (key: string): string | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
   }
+};
 
-  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+export const getStoredThemePreference = (): ThemePreference => {
+  const stored = readLocalStorageItem(THEME_STORAGE_KEY);
   return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
 };
 
 export const getStoredMermaidTheme = (): MermaidThemeName => {
-  if (typeof window === "undefined") return "zinc-light";
-  const stored = window.localStorage.getItem(MERMAID_THEME_STORAGE_KEY);
+  const stored = readLocalStorageItem(MERMAID_THEME_STORAGE_KEY);
   return MERMAID_THEME_NAMES.includes(stored as MermaidThemeName) ? stored as MermaidThemeName : "zinc-light";
 };
 
 export const getStoredMermaidRenderer = (): MermaidRenderer => {
-  if (typeof window === "undefined") return "beautiful";
-  const stored = window.localStorage.getItem(MERMAID_RENDERER_STORAGE_KEY);
+  const stored = readLocalStorageItem(MERMAID_RENDERER_STORAGE_KEY);
   return MERMAID_RENDERERS.includes(stored as MermaidRenderer) ? stored as MermaidRenderer : "beautiful";
 };
 
 export const getStoredEditorTheme = (): string => {
-  if (typeof window === "undefined") return "default";
-  const stored = window.localStorage.getItem(EDITOR_THEME_STORAGE_KEY);
-  return stored || "default";
+  return readLocalStorageItem(EDITOR_THEME_STORAGE_KEY) || "default";
 };
 
 const isHexColor = (value: unknown): value is string => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
+
+const normalizeThemeColors = (value: Partial<ThemeColors> | undefined, fallback: ThemeColors): ThemeColors => ({
+  background: isHexColor(value?.background) ? value.background : fallback.background,
+  text: isHexColor(value?.text) ? value.text : fallback.text,
+  muted: isHexColor(value?.muted) ? value.muted : fallback.muted,
+  heading: isHexColor(value?.heading) ? value.heading : fallback.heading,
+  accent: isHexColor(value?.accent) ? value.accent : fallback.accent,
+  soft: isHexColor(value?.soft) ? value.soft : fallback.soft,
+  border: isHexColor(value?.border) ? value.border : fallback.border,
+});
+
+const normalizeCustomEditorTheme = (theme: CustomEditorTheme): CustomEditorTheme => ({
+  ...theme,
+  light: normalizeThemeColors(theme.light, DEFAULT_CUSTOM_LIGHT_COLORS),
+  dark: normalizeThemeColors(theme.dark, DEFAULT_CUSTOM_DARK_COLORS),
+});
 
 export const getStoredCustomEditorThemes = (): CustomEditorTheme[] => {
   if (typeof window === "undefined") return [DEFAULT_CUSTOM_EDITOR_THEME];
@@ -178,7 +208,7 @@ export const getStoredCustomEditorThemes = (): CustomEditorTheme[] => {
     if (storedThemesStr) {
       const parsed = JSON.parse(storedThemesStr) as CustomEditorTheme[];
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+        return parsed.map(normalizeCustomEditorTheme);
       }
     }
   } catch {
@@ -197,6 +227,7 @@ export const getStoredCustomEditorThemes = (): CustomEditorTheme[] => {
           light: {
             background: oldTheme.background || DEFAULT_CUSTOM_LIGHT_COLORS.background,
             text: oldTheme.text || DEFAULT_CUSTOM_LIGHT_COLORS.text,
+            muted: oldTheme.muted || DEFAULT_CUSTOM_LIGHT_COLORS.muted,
             heading: oldTheme.heading || DEFAULT_CUSTOM_LIGHT_COLORS.heading,
             accent: oldTheme.accent || DEFAULT_CUSTOM_LIGHT_COLORS.accent,
             soft: oldTheme.soft || DEFAULT_CUSTOM_LIGHT_COLORS.soft,
@@ -241,9 +272,6 @@ export const ThemeProvider = ({ children }: ThemeProviderProps) => {
   const [customEditorThemes, setCustomEditorThemesState] = useState<CustomEditorTheme[]>(getStoredCustomEditorThemes);
 
   useEffect(() => {
-    setResolvedTheme(applyThemeToDocument(preference));
-    window.localStorage.setItem(THEME_STORAGE_KEY, preference);
-
     if (preference !== "system") {
       return undefined;
     }
@@ -260,62 +288,118 @@ export const ThemeProvider = ({ children }: ThemeProviderProps) => {
     return customEditorThemes[0] || DEFAULT_CUSTOM_EDITOR_THEME;
   }, [customEditorThemes, editorTheme]);
 
-  const setCustomEditorTheme = (updatedTheme: CustomEditorTheme) => {
-    const nextThemes = customEditorThemes.map((t) =>
-      t.id === updatedTheme.id ? updatedTheme : t
-    );
-    if (!customEditorThemes.some((t) => t.id === updatedTheme.id)) {
-      if (customEditorThemes.length > 0) {
-        nextThemes[0] = { ...customEditorThemes[0], ...updatedTheme };
-      } else {
-        nextThemes.push(updatedTheme);
+  const setPreference = useCallback((nextPreference: ThemePreference) => {
+    // Apply the class before scheduling React work so a theme toggle can paint
+    // without waiting for the workspace and editor tree to render.
+    setResolvedTheme(applyThemeToDocument(nextPreference));
+    setPreferenceState(nextPreference);
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextPreference);
+  }, []);
+
+  const setCustomEditorTheme = useCallback((updatedTheme: CustomEditorTheme) => {
+    setCustomEditorThemesState((currentThemes) => {
+      const nextThemes = currentThemes.map((theme) =>
+        theme.id === updatedTheme.id ? updatedTheme : theme
+      );
+      if (!currentThemes.some((theme) => theme.id === updatedTheme.id)) {
+        if (currentThemes.length > 0) {
+          nextThemes[0] = { ...currentThemes[0], ...updatedTheme };
+        } else {
+          nextThemes.push(updatedTheme);
+        }
       }
-    }
+      window.localStorage.setItem(CUSTOM_EDITOR_THEMES_STORAGE_KEY, JSON.stringify(nextThemes));
+      return nextThemes;
+    });
+  }, []);
+
+  const setCustomEditorThemes = useCallback((nextThemes: CustomEditorTheme[]) => {
     setCustomEditorThemesState(nextThemes);
     window.localStorage.setItem(CUSTOM_EDITOR_THEMES_STORAGE_KEY, JSON.stringify(nextThemes));
-  };
+  }, []);
 
-  const setCustomEditorThemes = (nextThemes: CustomEditorTheme[]) => {
-    setCustomEditorThemesState(nextThemes);
-    window.localStorage.setItem(CUSTOM_EDITOR_THEMES_STORAGE_KEY, JSON.stringify(nextThemes));
-  };
+  const setMermaidTheme = useCallback((nextTheme: MermaidThemeName) => {
+    setMermaidThemeState(nextTheme);
+    window.localStorage.setItem(MERMAID_THEME_STORAGE_KEY, nextTheme);
+  }, []);
 
-  const value = useMemo(
+  const setMermaidRenderer = useCallback((nextRenderer: MermaidRenderer) => {
+    setMermaidRendererState(nextRenderer);
+    window.localStorage.setItem(MERMAID_RENDERER_STORAGE_KEY, nextRenderer);
+  }, []);
+
+  const setEditorTheme = useCallback((nextTheme: string) => {
+    setEditorThemeState(nextTheme);
+    window.localStorage.setItem(EDITOR_THEME_STORAGE_KEY, nextTheme);
+  }, []);
+
+  const appearanceValue = useMemo(
     () => ({
       preference,
       resolvedTheme,
-      setPreference: (nextPreference: ThemePreference) => setPreferenceState(nextPreference),
+      setPreference,
+    }),
+    [preference, resolvedTheme, setPreference]
+  );
+
+  const mermaidValue = useMemo(
+    () => ({
       mermaidTheme,
-      setMermaidTheme: (nextTheme: MermaidThemeName) => {
-        setMermaidThemeState(nextTheme);
-        window.localStorage.setItem(MERMAID_THEME_STORAGE_KEY, nextTheme);
-      },
+      setMermaidTheme,
       mermaidRenderer,
-      setMermaidRenderer: (nextRenderer: MermaidRenderer) => {
-        setMermaidRendererState(nextRenderer);
-        window.localStorage.setItem(MERMAID_RENDERER_STORAGE_KEY, nextRenderer);
-      },
+      setMermaidRenderer,
+    }),
+    [mermaidRenderer, mermaidTheme, setMermaidRenderer, setMermaidTheme]
+  );
+
+  const editorValue = useMemo(
+    () => ({
       editorTheme,
-      setEditorTheme: (nextTheme: string) => {
-        setEditorThemeState(nextTheme);
-        window.localStorage.setItem(EDITOR_THEME_STORAGE_KEY, nextTheme);
-      },
+      setEditorTheme,
       customEditorThemes,
       setCustomEditorThemes,
       customEditorTheme,
       setCustomEditorTheme,
     }),
-    [customEditorThemes, customEditorTheme, editorTheme, mermaidRenderer, mermaidTheme, preference, resolvedTheme]
+    [customEditorThemes, customEditorTheme, editorTheme, setCustomEditorTheme, setCustomEditorThemes, setEditorTheme]
   );
 
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+  return (
+    <AppearanceThemeContext.Provider value={appearanceValue}>
+      <MermaidThemeContext.Provider value={mermaidValue}>
+        <EditorThemeContext.Provider value={editorValue}>
+          {children}
+        </EditorThemeContext.Provider>
+      </MermaidThemeContext.Provider>
+    </AppearanceThemeContext.Provider>
+  );
 };
 
-export const useTheme = () => {
-  const context = useContext(ThemeContext);
+export const useAppearanceTheme = () => {
+  const context = useContext(AppearanceThemeContext);
 
   if (!context) {
-    throw new Error("useTheme must be used within ThemeProvider");
+    throw new Error("useAppearanceTheme must be used within ThemeProvider");
+  }
+
+  return context;
+};
+
+export const useMermaidTheme = () => {
+  const context = useContext(MermaidThemeContext);
+
+  if (!context) {
+    throw new Error("useMermaidTheme must be used within ThemeProvider");
+  }
+
+  return context;
+};
+
+export const useEditorTheme = () => {
+  const context = useContext(EditorThemeContext);
+
+  if (!context) {
+    throw new Error("useEditorTheme must be used within ThemeProvider");
   }
 
   return context;
